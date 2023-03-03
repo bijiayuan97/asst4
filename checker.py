@@ -30,7 +30,7 @@ prog = 'nbody-release-' + version
 # set number of workers
 if sys.argv[3] == '-ghc':
     workers = [4, 8] if version == 'v1' else [1, 4]
-elif sys.argc[3] == '-psc':
+elif sys.argv[3] == '-psc':
     workers = [16, 128] if version == 'v1' else [16,121]
 
 
