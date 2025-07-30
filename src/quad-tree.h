@@ -31,6 +31,7 @@ inline float boxPointDistance(Vec2 bmin, Vec2 bmax, Vec2 p) {
 }
 
 // NOTE: Do not remove or edit funcations and variables in this class definition
+const int QuadTreeLeafSize = 8;
 class QuadTree {
 public:
   std::unique_ptr<QuadTreeNode> root = nullptr;
@@ -67,9 +68,50 @@ private:
   static std::unique_ptr<QuadTreeNode>
   buildQuadTreeImpl(const std::vector<Particle> &particles, Vec2 bmin,
                     Vec2 bmax) {
-    // TODO: paste your sequential implementation in Assignment 3 here.
-    // (or you may also rewrite a new version)
-    return nullptr;
+    std::unique_ptr<QuadTreeNode> ptr(new QuadTreeNode());
+
+    if (particles.size() <= QuadTreeLeafSize) {
+      ptr -> isLeaf = 1;
+      ptr -> particles.assign(particles.begin(), particles.end());
+
+      return ptr;
+    } else {
+      ptr -> isLeaf = 0;
+      Vec2 bmid = (bmin + bmax) * 0.5;
+
+      /**
+       * Assign particles to 4 regions:
+       * [bmin.x, bmin.y] ------------- [bmid.x, bmin.y] ------------- [bmax.x, bmin.y]
+       *         |       subParticles[0]        |       subParticles[1]         |
+       * [bmin.x, bmid.y] ------------- [bmid.x, bmid.y] ------------- [bmax.x, bmid.y]
+       *         |       subParticles[2]        |       subParticles[3]         |
+       * [bmin.x, bmax.y] ------------- [bmid.x, bmax.y] ------------- [bmax.x, bmax.y]
+       */
+      for (int i=0; i<4; i++) {
+        std::vector<Particle> subParticles;
+
+        for (int j=0; j<particles.size(); j++) {
+          Vec2 relaToMid = particles[j].position - bmid;
+
+          int pos = (int)(relaToMid.x >= 0) + (int)(relaToMid.y >= 0) * 2;
+
+          if (pos == i) {
+            subParticles.push_back(particles[j]);
+          }
+        }
+
+        float miny = i < 2 ? bmin.y : bmid.y;
+        float maxy = i < 2 ? bmid.y : bmax.y;
+        float minx = i & 1 ? bmid.x : bmin.x;
+        float maxx = i & 1 ? bmax.x : bmid.x;
+        Vec2 submin(minx, miny);
+        Vec2 submax(maxx, maxy);
+
+        ptr -> children[i] = buildQuadTreeImpl(subParticles, submin, submax);
+      }
+    }
+
+    return ptr;
   }
 
   static void getParticlesImpl(std::vector<Particle> &particles,
