@@ -90,99 +90,116 @@ int main(int argc, char *argv[]) {
   createDatatypeParticle(mpi_particle, mpi_vec2);
 
   // initialize parameters
-  int numWorkers = nproc;
-  int aveParticles = particles.size() / numWorkers;
-  int extra = particles.size() % numWorkers;
+  int aveParticles;
+  int extra;
   int offset;
   int mtype;
   int subParticles;
-  int numParticles = particles.size();
+  int numParticles;
+  double buildTreeTotalTime = 0.0;
+  double simulationStepTotalTime = 0.0;
   MPI_Status status;
   QuadTree tree;
 
   // Don't change the timeing for totalSimulationTime.
   MPI_Barrier(MPI_COMM_WORLD);
   Timer totalSimulationTimer;
+  Timer buildTreeTimer;
+  Timer simulationStepTimer;
+
+  if (pid == MASTER) {
+    mtype = FROM_MASTER;
+    aveParticles = particles.size() / nproc;
+    extra = particles.size() % nproc;
+    numParticles = particles.size();
+
+    for (int dest = 1; dest < nproc; dest++) {
+      MPI_Send(&numParticles, 1, MPI_INT, dest, mtype, MPI_COMM_WORLD);
+    }
+
+    newParticles.resize(numParticles);
+  } else if (pid > MASTER) {
+    /* Receive signal from master on offset and number of particles to process */
+    mtype = FROM_MASTER;
+
+    MPI_Recv(&numParticles, 1, MPI_INT, MASTER, mtype, MPI_COMM_WORLD, &status);
+
+    extra = numParticles % nproc;
+    aveParticles = numParticles / nproc;
+    offset = (pid < extra) ? ((aveParticles + 1) * (pid - 1)) : ((aveParticles + 1) * extra + aveParticles * (pid - extra));
+    subParticles = (pid < extra) ? (aveParticles + 1) : aveParticles;
+
+    particles.resize(numParticles);
+    newParticles.resize(subParticles);
+  }
 
   for (int i = 0; i < options.numIterations; i++) {
     if (pid == MASTER) {
-      // printf("mpi has started with %d task.\n", nproc);
-      // printf("available workers: %d\n", nproc - 1);
-
       /* allocate particles to workers */
-      offset = extra ? (aveParticles + 1) : aveParticles;
       mtype = FROM_MASTER;
 
-      newParticles.resize(numParticles);
-
-      for (int dest = 1; dest < numWorkers; dest++) {
-        subParticles = (dest < extra) ? (aveParticles + 1) : aveParticles;
-        // printf("Send %d particles to worker %d offset=%d\n", subParticles, dest, offset);
-
-        MPI_Send(&offset, 1, MPI_INT, dest, mtype, MPI_COMM_WORLD);
-        MPI_Send(&subParticles, 1, MPI_INT, dest, mtype, MPI_COMM_WORLD);
-        MPI_Send(&numParticles, 1, MPI_INT, dest, mtype, MPI_COMM_WORLD);
+      for (int dest = 1; dest < nproc; dest++) {
         MPI_Send(&particles[0], numParticles, mpi_particle, dest, mtype, MPI_COMM_WORLD);
-
-        offset = offset + subParticles;
       }
 
+      double startBuild = buildTreeTimer.elapsed();
       QuadTree::buildQuadTree(particles, tree);
+      double finishBuild = buildTreeTimer.elapsed();
+      buildTreeTotalTime += finishBuild - startBuild;
+
+      double startSimulationStep = simulationStepTimer.elapsed();
       if (extra) {
         simulateStep(tree, particles, newParticles, stepParams, 0, aveParticles + 1);
       } else {
         simulateStep(tree, particles, newParticles, stepParams, 0, aveParticles);
       }
+      double finishSimulationStep = simulationStepTimer.elapsed();
+      simulationStepTotalTime += finishSimulationStep - startSimulationStep;
 
       mtype = FROM_WORKER;
       MPI_Status status;
 
-      for (int i=1; i<numWorkers; i++) {
+      for (int i=1; i<nproc; i++) {
         int source = i;
 
-        MPI_Recv(&offset, 1, MPI_INT, source, mtype, MPI_COMM_WORLD, &status);
-        MPI_Recv(&subParticles, 1, MPI_INT, source, mtype, MPI_COMM_WORLD, &status);
+        offset = (source < extra) ? ((aveParticles + 1) * (source - 1)) : ((aveParticles + 1) * extra + aveParticles * (source - extra));
+        subParticles = (source < extra) ? (aveParticles + 1) : aveParticles;
         // printf("Received results from worker %d for offset=%d and subParticles=%d: status = %d\n", source, offset, subParticles, status.MPI_TAG);
         MPI_Recv(&newParticles[offset], subParticles, mpi_particle, source, mtype, MPI_COMM_WORLD, &status);
         // printf("Received new particles: %ld\n", newParticles.size());
       }
 
       particles.swap(newParticles);
-      newParticles.clear();
       // printf("master finish iteration: %d\n", i);
     } else if (pid > MASTER) {
       // printf("mpi started worker %d\n", pid);
 
-      /* Receive signal from master on offset and number of particles to process */
+      /* Receive signal from master on particles to process */
       mtype = FROM_MASTER;
-
-      MPI_Recv(&offset, 1, MPI_INT, MASTER, mtype, MPI_COMM_WORLD, &status);
-      MPI_Recv(&subParticles, 1, MPI_INT, MASTER, mtype, MPI_COMM_WORLD, &status);
-      MPI_Recv(&numParticles, 1, MPI_INT, MASTER, mtype, MPI_COMM_WORLD, &status);
-
-      particles.resize(numParticles);
-      newParticles.resize(subParticles);
 
       MPI_Recv(&particles[0], numParticles, mpi_particle, MASTER, mtype, MPI_COMM_WORLD, &status);
 
       // printf("Received order from master for offset=%d and subParticles=%d and particles=%ld: status = %d\n", offset, subParticles, particles.size(), status.MPI_TAG);
+      double startBuild = buildTreeTimer.elapsed();
       QuadTree::buildQuadTree(particles, tree);
-      // printf("finished building tree for proc: %d\n", pid);
+      double finishBuild = buildTreeTimer.elapsed();
+      buildTreeTotalTime += finishBuild - startBuild;
 
+      double startSimulationStep = simulationStepTimer.elapsed();
       simulateStep(tree, particles, newParticles, stepParams, offset, subParticles);
+      double finishSimulationStep = simulationStepTimer.elapsed();
+      simulationStepTotalTime += finishSimulationStep - startSimulationStep;
 
       // printf("Sending results to master for offset=%d and subParticles=%d and particles=%ld\n", offset, subParticles, newParticles.size());
       mtype = FROM_WORKER;
-      MPI_Send(&offset, 1, MPI_INT, MASTER, mtype, MPI_COMM_WORLD);
-      MPI_Send(&subParticles, 1, MPI_INT, MASTER, mtype, MPI_COMM_WORLD);
       MPI_Send(&newParticles[0], subParticles, mpi_particle, MASTER, mtype, MPI_COMM_WORLD);
-
-      newParticles.clear();
-      particles.clear();
     }
   }
   MPI_Barrier(MPI_COMM_WORLD);
   double totalSimulationTime = totalSimulationTimer.elapsed();
+
+  printf("total build tree time in pid %d: %.6fs\n", pid, buildTreeTotalTime);
+  printf("total simulation step time in pid %d: %.6fs\n", pid, simulationStepTotalTime);
 
   if (pid == MASTER) {
     printf("total simulation time: %.6fs\n", totalSimulationTime);
